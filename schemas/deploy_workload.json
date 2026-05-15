@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["name", "image", "namespace"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Workload name"
+    },
+    "image": {
+      "type": "string",
+      "description": "Container image (e.g. nginx:latest)"
+    },
+    "namespace": {
+      "type": "string",
+      "description": "Target namespace"
+    },
+    "replicas": {
+      "type": "integer",
+      "default": 1,
+      "description": "Number of replicas"
+    },
+    "env": {
+      "type": "object",
+      "description": "Environment variables as key-value pairs"
+    }
+  }
+}

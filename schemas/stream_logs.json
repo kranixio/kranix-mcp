@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["pod", "namespace"],
+  "properties": {
+    "pod": {
+      "type": "string",
+      "description": "Pod name"
+    },
+    "namespace": {
+      "type": "string",
+      "description": "Namespace"
+    },
+    "tail_lines": {
+      "type": "integer",
+      "default": 100,
+      "description": "Number of lines to retrieve"
+    }
+  }
+}

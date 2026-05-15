@@ -1,0 +1,17 @@
+mcp:
+  transport: stdio          # stdio | http
+  port: 3100                # only used if transport: http
+
+krane_api:
+  url: "http://localhost:8080"
+  api_key: ""               # or set KRANE_API_KEY env var
+  timeout: 30s
+
+safety:
+  allow_delete_workload: true
+  allow_create_namespace: true
+  readonly_mode: false       # set true to allow only read tools
+
+audit:
+  enabled: true
+  sink: stdout
