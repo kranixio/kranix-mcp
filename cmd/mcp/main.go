@@ -94,10 +94,14 @@ func main() {
 	// Initialize components
 	kraneClient := client.New(config.KraneAPI.URL, config.KraneAPI.APIKey)
 	auditLogger := audit.New(config.Audit.Enabled, config.Audit.Sink)
-	safetyPolicy := safety.New(config.Safety)
+	safetyPolicy := safety.New(map[string]interface{}{
+		"allow_delete_workload":  config.Safety.AllowDeleteWorkload,
+		"allow_create_namespace": config.Safety.AllowCreateNamespace,
+		"readonly_mode":          config.Safety.ReadonlyMode,
+	})
 
 	// Register all tools
-	toolRegistry := tools.NewRegistry(kraneClient, auditLogger, safetyPolicy)
+	toolRegistry := tools.New(kraneClient, auditLogger, safetyPolicy)
 	toolRegistry.RegisterTools()
 
 	ctx, cancel := context.WithCancel(context.Background())
