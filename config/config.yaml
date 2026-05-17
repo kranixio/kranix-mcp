@@ -41,3 +41,32 @@ healing:
 audit:
   enabled: true
   sink: stdout
+
+coordination:
+  enabled: true
+  max_concurrent_tasks: 10
+  task_timeout: 30m
+
+dryrun:
+  enabled: true
+  mode: "disabled"
+  max_actions: 100
+
+incident:
+  enabled: true
+  runbook_path: "./runbooks"
+  auto_load: true
+  default_timeout: 5m
+
+# Session Memory Configuration
+memory:
+  enabled: true
+  max_entries: 100
+  ttl: 30m
+  cleanup_interval: 10m
+
+# Scheduler Configuration
+scheduler:
+  enabled: true
+  check_interval: 1m
+  max_results: 1000

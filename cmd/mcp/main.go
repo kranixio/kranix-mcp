@@ -17,7 +17,9 @@ import (
 	"github.com/kranix-io/kranix-mcp/internal/dryrun"
 	"github.com/kranix-io/kranix-mcp/internal/healing"
 	"github.com/kranix-io/kranix-mcp/internal/incident"
+	"github.com/kranix-io/kranix-mcp/internal/memory"
 	"github.com/kranix-io/kranix-mcp/internal/safety"
+	"github.com/kranix-io/kranix-mcp/internal/scheduler"
 	"github.com/kranix-io/kranix-mcp/internal/server"
 	"github.com/kranix-io/kranix-mcp/internal/tools"
 	"gopkg.in/yaml.v3"
@@ -32,6 +34,8 @@ type Config struct {
 	Coordination CoordinationConfig `yaml:"coordination"`
 	DryRun       DryRunConfig       `yaml:"dryrun"`
 	Incident     IncidentConfig     `yaml:"incident"`
+	Memory       MemoryConfig       `yaml:"memory"`
+	Scheduler    SchedulerConfig    `yaml:"scheduler"`
 }
 
 type MCPConfig struct {
@@ -93,6 +97,19 @@ type IncidentConfig struct {
 	RunbookPath string        `yaml:"runbook_path"`
 	AutoLoad    bool          `yaml:"auto_load"`
 	Timeout     time.Duration `yaml:"default_timeout"`
+}
+
+type MemoryConfig struct {
+	Enabled         bool          `yaml:"enabled"`
+	MaxEntries      int           `yaml:"max_entries"`
+	TTL             time.Duration `yaml:"ttl"`
+	CleanupInterval time.Duration `yaml:"cleanup_interval"`
+}
+
+type SchedulerConfig struct {
+	Enabled       bool          `yaml:"enabled"`
+	CheckInterval time.Duration `yaml:"check_interval"`
+	MaxResults    int           `yaml:"max_results"`
 }
 
 func main() {
@@ -188,8 +205,29 @@ func main() {
 		Timeout:     config.Incident.Timeout,
 	}, &toolExecutorWrapper{client: kraneClient})
 
+	// Initialize session memory
+	sessionMemory := memory.New(&memory.Config{
+		MaxEntries: config.Memory.MaxEntries,
+		TTL:        config.Memory.TTL,
+	})
+	if config.Memory.Enabled && config.Memory.CleanupInterval > 0 {
+		sessionMemory.StartCleanupRoutine(config.Memory.CleanupInterval)
+		defer sessionMemory.CleanupExpiredSessions()
+	}
+
+	// Initialize scheduler
+	var taskScheduler *scheduler.Scheduler
+	if config.Scheduler.Enabled {
+		taskScheduler = scheduler.New(&scheduler.Config{
+			CheckInterval: config.Scheduler.CheckInterval,
+			MaxResults:    config.Scheduler.MaxResults,
+		}, &toolExecutorWrapper{client: kraneClient})
+		taskScheduler.Start()
+		defer taskScheduler.Stop()
+	}
+
 	// Register all tools
-	toolRegistry := tools.New(kraneClient, auditLogger, safetyPolicy, healer, coordinator, dryRunner, incidentMgr)
+	toolRegistry := tools.New(kraneClient, auditLogger, safetyPolicy, healer, coordinator, dryRunner, incidentMgr, sessionMemory, taskScheduler)
 	toolRegistry.RegisterTools()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -268,6 +306,17 @@ func loadConfig(path string) (*Config, error) {
 					RunbookPath: "./runbooks",
 					AutoLoad:    true,
 					Timeout:     5 * time.Minute,
+				},
+				Memory: MemoryConfig{
+					Enabled:         true,
+					MaxEntries:      100,
+					TTL:             30 * time.Minute,
+					CleanupInterval: 10 * time.Minute,
+				},
+				Scheduler: SchedulerConfig{
+					Enabled:       true,
+					CheckInterval: 1 * time.Minute,
+					MaxResults:    1000,
 				},
 			}, nil
 		}

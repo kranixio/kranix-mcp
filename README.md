@@ -77,6 +77,27 @@ These are the tools AI agents can call:
 | `list_executions` | List all runbook executions, optionally filtered by runbook or status |
 | `cancel_execution` | Cancel a running runbook execution |
 | `create_runbook` | Create a new incident response runbook |
+| **Agent Session Memory** | |
+| `set_memory_context` | Store context data in the agent's session memory |
+| `get_memory_context` | Retrieve context data from the agent's session memory |
+| `get_all_memory_context` | Retrieve all context data from the agent's session memory |
+| `get_session_history` | Get the tool call history for the agent's session |
+| `clear_session_history` | Clear the tool call history for the agent's session |
+| **Per-Agent Audit Log** | |
+| `get_agent_audit_log` | Retrieve audit log entries for a specific agent |
+| `get_agent_summary` | Get a summary of agent activity including total calls, success rate, tools used |
+| `list_all_agents` | List all unique agent IDs that have performed actions |
+| `export_audit_log` | Export audit log as JSON for a specific agent or all agents |
+| **Scheduled Agent Tasks** | |
+| `create_scheduled_task` | Create a new scheduled task to run on a cron schedule |
+| `list_scheduled_tasks` | List all scheduled tasks |
+| `get_scheduled_task` | Get details of a specific scheduled task |
+| `update_scheduled_task` | Update an existing scheduled task |
+| `delete_scheduled_task` | Delete a scheduled task |
+| `enable_scheduled_task` | Enable a scheduled task |
+| `disable_scheduled_task` | Disable a scheduled task |
+| `get_task_results` | Get execution results for a scheduled task |
+| `get_scheduler_stats` | Get scheduler statistics including total tasks, executions, etc. |
 
 ### Tool schema example
 
@@ -314,6 +335,119 @@ safety:
 **Namespace Isolation:**
 
 Agents can be restricted to specific namespaces. When an agent tries to access a namespace outside its allowed list, the action is denied with a clear error message.
+
+### Agent Session Memory
+
+The session memory feature maintains context across multiple tool calls for each agent, enabling more sophisticated multi-step workflows:
+
+**Features:**
+- **Context Storage**: Store and retrieve key-value data across tool calls
+- **Session History**: Track all tool calls made by an agent in the current session
+- **Automatic Cleanup**: Expired sessions are automatically cleaned up based on TTL
+- **Per-Agent Isolation**: Each agent has its own isolated memory space
+
+**Usage:**
+
+```json
+{
+  "key": "current_namespace",
+  "value": "production"
+}
+```
+
+**Configuration:**
+
+```yaml
+memory:
+  enabled: true
+  max_entries: 100              # Max history entries per session
+  ttl: 30m                      # Session time-to-live
+  cleanup_interval: 10m         # Cleanup interval for expired sessions
+```
+
+**Tools:**
+- `set_memory_context` - Store context data
+- `get_memory_context` - Retrieve specific context data
+- `get_all_memory_context` - Retrieve all context data
+- `get_session_history` - Get tool call history
+- `clear_session_history` - Clear session history
+
+### Per-Agent Audit Log
+
+Enhanced audit logging provides detailed per-agent tracking of all actions:
+
+**Features:**
+- **Agent-Specific Queries**: Query audit logs by agent ID
+- **Activity Summaries**: Get summaries including total calls, success rate, tools used
+- **Flexible Filtering**: Filter by tool name, outcome, time range
+- **Export Capabilities**: Export audit logs as JSON
+- **In-Memory Storage**: Fast in-memory storage with configurable limits
+
+**Usage:**
+
+```json
+{
+  "agent_id": "claude-desktop",
+  "limit": 50
+}
+```
+
+**Configuration:**
+
+```yaml
+audit:
+  enabled: true
+  sink: memory                  # stdout | file | memory | all
+```
+
+**Tools:**
+- `get_agent_audit_log` - Retrieve audit log entries for a specific agent
+- `get_agent_summary` - Get agent activity summary
+- `list_all_agents` - List all unique agent IDs
+- `export_audit_log` - Export audit log as JSON
+
+### Scheduled Agent Tasks
+
+The scheduler enables agents to create and manage cron-based scheduled tasks:
+
+**Features:**
+- **Cron Scheduling**: Schedule tasks using cron expressions
+- **Task Management**: Create, update, delete, enable, and disable tasks
+- **Execution Tracking**: Track task execution results and history
+- **Tool Integration**: Execute any available MCP tool on a schedule
+- **Statistics**: Get scheduler statistics and task metrics
+
+**Usage:**
+
+```json
+{
+  "id": "health-check-hourly",
+  "name": "Hourly Health Check",
+  "cron_expr": "0 * * * *",
+  "tool_name": "get_cluster_health",
+  "enabled": true
+}
+```
+
+**Configuration:**
+
+```yaml
+scheduler:
+  enabled: true
+  check_interval: 1m            # How often to check for due tasks
+  max_results: 1000             # Max execution results to store
+```
+
+**Tools:**
+- `create_scheduled_task` - Create a new scheduled task
+- `list_scheduled_tasks` - List all scheduled tasks
+- `get_scheduled_task` - Get details of a specific task
+- `update_scheduled_task` - Update an existing task
+- `delete_scheduled_task` - Delete a scheduled task
+- `enable_scheduled_task` - Enable a scheduled task
+- `disable_scheduled_task` - Disable a scheduled task
+- `get_task_results` - Get execution results for a task
+- `get_scheduler_stats` - Get scheduler statistics
 
 ---
 

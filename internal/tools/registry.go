@@ -12,8 +12,10 @@ import (
 	"github.com/kranix-io/kranix-mcp/internal/dryrun"
 	"github.com/kranix-io/kranix-mcp/internal/healing"
 	"github.com/kranix-io/kranix-mcp/internal/incident"
+	"github.com/kranix-io/kranix-mcp/internal/memory"
 	"github.com/kranix-io/kranix-mcp/internal/nlp"
 	"github.com/kranix-io/kranix-mcp/internal/safety"
+	"github.com/kranix-io/kranix-mcp/internal/scheduler"
 )
 
 type ToolFunc func(ctx context.Context, inputs map[string]interface{}) (string, error)
@@ -26,28 +28,32 @@ type ToolDefinition struct {
 }
 
 type Registry struct {
-	client      *client.Client
-	auditLogger *audit.AuditLogger
-	safety      *safety.SafetyPolicy
-	healer      *healing.Healer
-	nlpParser   *nlp.Parser
-	coordinator *coordination.Coordinator
-	dryRunner   *dryrun.DryRunner
-	incidentMgr *incident.IncidentManager
-	tools       map[string]ToolDefinition
+	client        *client.Client
+	auditLogger   *audit.AuditLogger
+	safety        *safety.SafetyPolicy
+	healer        *healing.Healer
+	nlpParser     *nlp.Parser
+	coordinator   *coordination.Coordinator
+	dryRunner     *dryrun.DryRunner
+	incidentMgr   *incident.IncidentManager
+	sessionMemory *memory.SessionMemory
+	taskScheduler *scheduler.Scheduler
+	tools         map[string]ToolDefinition
 }
 
-func New(client *client.Client, auditLogger *audit.AuditLogger, safety *safety.SafetyPolicy, healer *healing.Healer, coordinator *coordination.Coordinator, dryRunner *dryrun.DryRunner, incidentMgr *incident.IncidentManager) *Registry {
+func New(client *client.Client, auditLogger *audit.AuditLogger, safety *safety.SafetyPolicy, healer *healing.Healer, coordinator *coordination.Coordinator, dryRunner *dryrun.DryRunner, incidentMgr *incident.IncidentManager, sessionMemory *memory.SessionMemory, taskScheduler *scheduler.Scheduler) *Registry {
 	return &Registry{
-		client:      client,
-		auditLogger: auditLogger,
-		safety:      safety,
-		healer:      healer,
-		nlpParser:   nlp.NewParser(),
-		coordinator: coordinator,
-		dryRunner:   dryRunner,
-		incidentMgr: incidentMgr,
-		tools:       make(map[string]ToolDefinition),
+		client:        client,
+		auditLogger:   auditLogger,
+		safety:        safety,
+		healer:        healer,
+		nlpParser:     nlp.NewParser(),
+		coordinator:   coordinator,
+		dryRunner:     dryRunner,
+		incidentMgr:   incidentMgr,
+		sessionMemory: sessionMemory,
+		taskScheduler: taskScheduler,
+		tools:         make(map[string]ToolDefinition),
 	}
 }
 
@@ -627,6 +633,329 @@ func (r *Registry) RegisterTools() {
 			},
 		},
 		Handler: r.createRunbook,
+	})
+
+	// Session Memory Tools
+	r.RegisterTool(ToolDefinition{
+		Name:        "set_memory_context",
+		Description: "Store context data in the agent's session memory",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"key", "value"},
+			"properties": map[string]interface{}{
+				"key": map[string]interface{}{
+					"type":        "string",
+					"description": "Context key",
+				},
+				"value": map[string]interface{}{
+					"type":        "string",
+					"description": "Context value (JSON string for complex types)",
+				},
+			},
+		},
+		Handler: r.setMemoryContext,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_memory_context",
+		Description: "Retrieve context data from the agent's session memory",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"key"},
+			"properties": map[string]interface{}{
+				"key": map[string]interface{}{
+					"type":        "string",
+					"description": "Context key to retrieve",
+				},
+			},
+		},
+		Handler: r.getMemoryContext,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_all_memory_context",
+		Description: "Retrieve all context data from the agent's session memory",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		Handler: r.getAllMemoryContext,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_session_history",
+		Description: "Get the tool call history for the agent's session",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"limit": map[string]interface{}{
+					"type":        "integer",
+					"description": "Maximum number of history entries to return",
+					"default":     10,
+				},
+			},
+		},
+		Handler: r.getSessionHistory,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "clear_session_history",
+		Description: "Clear the tool call history for the agent's session",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		Handler: r.clearSessionHistory,
+	})
+
+	// Per-Agent Audit Tools
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_agent_audit_log",
+		Description: "Retrieve audit log entries for a specific agent",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"agent_id"},
+			"properties": map[string]interface{}{
+				"agent_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Agent ID to query",
+				},
+				"limit": map[string]interface{}{
+					"type":        "integer",
+					"description": "Maximum number of entries to return",
+					"default":     50,
+				},
+			},
+		},
+		Handler: r.getAgentAuditLog,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_agent_summary",
+		Description: "Get a summary of agent activity including total calls, success rate, tools used",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"agent_id"},
+			"properties": map[string]interface{}{
+				"agent_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Agent ID to summarize",
+				},
+			},
+		},
+		Handler: r.getAgentSummary,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "list_all_agents",
+		Description: "List all unique agent IDs that have performed actions",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		Handler: r.listAllAgents,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "export_audit_log",
+		Description: "Export audit log as JSON for a specific agent or all agents",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"agent_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Agent ID to export (empty for all agents)",
+				},
+			},
+		},
+		Handler: r.exportAuditLog,
+	})
+
+	// Scheduler Tools
+	r.RegisterTool(ToolDefinition{
+		Name:        "create_scheduled_task",
+		Description: "Create a new scheduled task to run on a cron schedule",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"id", "name", "cron_expr", "tool_name"},
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "string",
+					"description": "Unique task ID",
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Task name",
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "Task description",
+				},
+				"cron_expr": map[string]interface{}{
+					"type":        "string",
+					"description": "Cron expression (e.g., '0 */5 * * *' for every 5 minutes)",
+				},
+				"tool_name": map[string]interface{}{
+					"type":        "string",
+					"description": "Tool to execute",
+				},
+				"inputs": map[string]interface{}{
+					"type":        "object",
+					"description": "Tool inputs as key-value pairs",
+				},
+				"enabled": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Whether the task is enabled",
+					"default":     true,
+				},
+			},
+		},
+		Handler: r.createScheduledTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "list_scheduled_tasks",
+		Description: "List all scheduled tasks",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		Handler: r.listScheduledTasks,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_scheduled_task",
+		Description: "Get details of a specific scheduled task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+			},
+		},
+		Handler: r.getScheduledTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "update_scheduled_task",
+		Description: "Update an existing scheduled task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"id"},
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Task name",
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "Task description",
+				},
+				"cron_expr": map[string]interface{}{
+					"type":        "string",
+					"description": "Cron expression",
+				},
+				"tool_name": map[string]interface{}{
+					"type":        "string",
+					"description": "Tool to execute",
+				},
+				"inputs": map[string]interface{}{
+					"type":        "object",
+					"description": "Tool inputs",
+				},
+				"enabled": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Whether the task is enabled",
+				},
+			},
+		},
+		Handler: r.updateScheduledTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "delete_scheduled_task",
+		Description: "Delete a scheduled task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+			},
+		},
+		Handler: r.deleteScheduledTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "enable_scheduled_task",
+		Description: "Enable a scheduled task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+			},
+		},
+		Handler: r.enableScheduledTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "disable_scheduled_task",
+		Description: "Disable a scheduled task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+			},
+		},
+		Handler: r.disableScheduledTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_task_results",
+		Description: "Get execution results for a scheduled task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+				"limit": map[string]interface{}{
+					"type":        "integer",
+					"description": "Maximum number of results to return",
+					"default":     10,
+				},
+			},
+		},
+		Handler: r.getTaskResults,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_scheduler_stats",
+		Description: "Get scheduler statistics including total tasks, executions, etc.",
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		Handler: r.getSchedulerStats,
 	})
 }
 
@@ -1341,5 +1670,325 @@ func (r *Registry) createRunbook(ctx context.Context, inputs map[string]interfac
 		return "", err
 	}
 
-	return runbook.ToJSON()
+	return fmt.Sprintf("Runbook %s created", runbook.Name), nil
+}
+
+// Session Memory Tool Handlers
+func (r *Registry) setMemoryContext(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.sessionMemory == nil {
+		return "", fmt.Errorf("session memory not initialized")
+	}
+
+	key := inputs["key"].(string)
+	value := inputs["value"].(string)
+
+	agentID := "unknown"
+	if aid, ok := ctx.Value("agent_id").(string); ok {
+		agentID = aid
+	}
+
+	r.sessionMemory.SetContext(agentID, key, value)
+	return fmt.Sprintf("Context set: %s = %s", key, value), nil
+}
+
+func (r *Registry) getMemoryContext(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.sessionMemory == nil {
+		return "", fmt.Errorf("session memory not initialized")
+	}
+
+	key := inputs["key"].(string)
+
+	agentID := "unknown"
+	if aid, ok := ctx.Value("agent_id").(string); ok {
+		agentID = aid
+	}
+
+	value, exists := r.sessionMemory.GetContext(agentID, key)
+	if !exists {
+		return fmt.Sprintf("Key '%s' not found in session memory", key), nil
+	}
+
+	return fmt.Sprintf("%v", value), nil
+}
+
+func (r *Registry) getAllMemoryContext(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.sessionMemory == nil {
+		return "", fmt.Errorf("session memory not initialized")
+	}
+
+	agentID := "unknown"
+	if aid, ok := ctx.Value("agent_id").(string); ok {
+		agentID = aid
+	}
+
+	context := r.sessionMemory.GetAllContext(agentID)
+	data, _ := json.MarshalIndent(context, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) getSessionHistory(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.sessionMemory == nil {
+		return "", fmt.Errorf("session memory not initialized")
+	}
+
+	agentID := "unknown"
+	if aid, ok := ctx.Value("agent_id").(string); ok {
+		agentID = aid
+	}
+
+	limit := 10
+	if lim, ok := inputs["limit"].(float64); ok {
+		limit = int(lim)
+	}
+
+	history := r.sessionMemory.GetHistory(agentID)
+	if limit > 0 && len(history) > limit {
+		history = history[len(history)-limit:]
+	}
+
+	data, _ := json.MarshalIndent(history, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) clearSessionHistory(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.sessionMemory == nil {
+		return "", fmt.Errorf("session memory not initialized")
+	}
+
+	agentID := "unknown"
+	if aid, ok := ctx.Value("agent_id").(string); ok {
+		agentID = aid
+	}
+
+	r.sessionMemory.ClearHistory(agentID)
+	return "Session history cleared", nil
+}
+
+// Per-Agent Audit Tool Handlers
+func (r *Registry) getAgentAuditLog(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.auditLogger == nil {
+		return "", fmt.Errorf("audit logger not initialized")
+	}
+
+	agentID := inputs["agent_id"].(string)
+	limit := 50
+	if lim, ok := inputs["limit"].(float64); ok {
+		limit = int(lim)
+	}
+
+	events := r.auditLogger.QueryByAgent(agentID)
+	if limit > 0 && len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+
+	data, _ := json.MarshalIndent(events, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) getAgentSummary(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.auditLogger == nil {
+		return "", fmt.Errorf("audit logger not initialized")
+	}
+
+	agentID := inputs["agent_id"].(string)
+	summary := r.auditLogger.GetAgentSummary(agentID)
+
+	data, _ := json.MarshalIndent(summary, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) listAllAgents(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.auditLogger == nil {
+		return "", fmt.Errorf("audit logger not initialized")
+	}
+
+	agents := r.auditLogger.GetAllAgents()
+	data, _ := json.MarshalIndent(agents, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) exportAuditLog(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.auditLogger == nil {
+		return "", fmt.Errorf("audit logger not initialized")
+	}
+
+	agentID := ""
+	if aid, ok := inputs["agent_id"].(string); ok {
+		agentID = aid
+	}
+
+	data, err := r.auditLogger.ExportAuditLog(agentID)
+	if err != nil {
+		return "", err
+	}
+	return data, nil
+}
+
+// Scheduler Tool Handlers
+func (r *Registry) createScheduledTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	task := &scheduler.Task{
+		ID:          inputs["id"].(string),
+		Name:        inputs["name"].(string),
+		Description: "",
+		CronExpr:    inputs["cron_expr"].(string),
+		Enabled:     true,
+		ToolName:    inputs["tool_name"].(string),
+		Inputs:      make(map[string]interface{}),
+	}
+
+	if desc, ok := inputs["description"].(string); ok {
+		task.Description = desc
+	}
+	if in, ok := inputs["inputs"].(map[string]interface{}); ok {
+		task.Inputs = in
+	}
+	if enabled, ok := inputs["enabled"].(bool); ok {
+		task.Enabled = enabled
+	}
+
+	agentID := "unknown"
+	if aid, ok := ctx.Value("agent_id").(string); ok {
+		agentID = aid
+	}
+	task.CreatedBy = agentID
+
+	err := r.taskScheduler.AddTask(task)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Scheduled task %s created", task.ID), nil
+}
+
+func (r *Registry) listScheduledTasks(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	tasks := r.taskScheduler.ListTasks()
+	data, _ := json.MarshalIndent(tasks, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) getScheduledTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	taskID := inputs["task_id"].(string)
+	task, err := r.taskScheduler.GetTask(taskID)
+	if err != nil {
+		return "", err
+	}
+
+	data, _ := json.MarshalIndent(task, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) updateScheduledTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	task := &scheduler.Task{
+		ID: inputs["id"].(string),
+	}
+
+	if name, ok := inputs["name"].(string); ok {
+		task.Name = name
+	}
+	if desc, ok := inputs["description"].(string); ok {
+		task.Description = desc
+	}
+	if cron, ok := inputs["cron_expr"].(string); ok {
+		task.CronExpr = cron
+	}
+	if tool, ok := inputs["tool_name"].(string); ok {
+		task.ToolName = tool
+	}
+	if in, ok := inputs["inputs"].(map[string]interface{}); ok {
+		task.Inputs = in
+	}
+	if enabled, ok := inputs["enabled"].(bool); ok {
+		task.Enabled = enabled
+	}
+
+	err := r.taskScheduler.UpdateTask(task)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Scheduled task %s updated", task.ID), nil
+}
+
+func (r *Registry) deleteScheduledTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	taskID := inputs["task_id"].(string)
+	err := r.taskScheduler.DeleteTask(taskID)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Scheduled task %s deleted", taskID), nil
+}
+
+func (r *Registry) enableScheduledTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	taskID := inputs["task_id"].(string)
+	err := r.taskScheduler.EnableTask(taskID)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Scheduled task %s enabled", taskID), nil
+}
+
+func (r *Registry) disableScheduledTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	taskID := inputs["task_id"].(string)
+	err := r.taskScheduler.DisableTask(taskID)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Scheduled task %s disabled", taskID), nil
+}
+
+func (r *Registry) getTaskResults(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	taskID := inputs["task_id"].(string)
+	limit := 10
+	if lim, ok := inputs["limit"].(float64); ok {
+		limit = int(lim)
+	}
+
+	results := r.taskScheduler.GetTaskResults(taskID, limit)
+	data, _ := json.MarshalIndent(results, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) getSchedulerStats(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.taskScheduler == nil {
+		return "", fmt.Errorf("scheduler not initialized")
+	}
+
+	stats := r.taskScheduler.GetStats()
+	data, _ := json.MarshalIndent(stats, "", "  ")
+	return string(data), nil
 }
