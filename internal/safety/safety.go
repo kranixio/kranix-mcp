@@ -4,10 +4,26 @@ import (
 	"fmt"
 )
 
+type PermissionScope string
+
+const (
+	ScopeReadOnly PermissionScope = "readonly"
+	ScopeWrite    PermissionScope = "write"
+	ScopeAdmin    PermissionScope = "admin"
+)
+
+type AgentPermissions struct {
+	Scope        PermissionScope `json:"scope"`
+	Namespaces   []string        `json:"namespaces"`    // Empty means all namespaces
+	AllowedTools []string        `json:"allowed_tools"` // Empty means all tools based on scope
+}
+
 type SafetyPolicy struct {
 	allowDeleteWorkload  bool
 	allowCreateNamespace bool
 	readonlyMode         bool
+	agentPermissions     map[string]AgentPermissions // agent_id -> permissions
+	defaultScope         PermissionScope
 }
 
 type ToolPermission struct {
@@ -17,11 +33,53 @@ type ToolPermission struct {
 }
 
 func New(config map[string]interface{}) *SafetyPolicy {
-	return &SafetyPolicy{
+	policy := &SafetyPolicy{
 		allowDeleteWorkload:  getBool(config, "allow_delete_workload", true),
 		allowCreateNamespace: getBool(config, "allow_create_namespace", true),
 		readonlyMode:         getBool(config, "readonly_mode", false),
+		agentPermissions:     make(map[string]AgentPermissions),
+		defaultScope:         ScopeWrite,
 	}
+
+	// Parse default scope
+	if scope, ok := config["default_scope"].(string); ok {
+		policy.defaultScope = PermissionScope(scope)
+	}
+
+	// Parse agent permissions
+	if agents, ok := config["agents"].(map[string]interface{}); ok {
+		for agentID, agentConfig := range agents {
+			if agentMap, ok := agentConfig.(map[string]interface{}); ok {
+				perms := AgentPermissions{
+					Scope: ScopeWrite, // default
+				}
+
+				if scope, ok := agentMap["scope"].(string); ok {
+					perms.Scope = PermissionScope(scope)
+				}
+
+				if namespaces, ok := agentMap["namespaces"].([]interface{}); ok {
+					for _, ns := range namespaces {
+						if nsStr, ok := ns.(string); ok {
+							perms.Namespaces = append(perms.Namespaces, nsStr)
+						}
+					}
+				}
+
+				if tools, ok := agentMap["allowed_tools"].([]interface{}); ok {
+					for _, tool := range tools {
+						if toolStr, ok := tool.(string); ok {
+							perms.AllowedTools = append(perms.AllowedTools, toolStr)
+						}
+					}
+				}
+
+				policy.agentPermissions[agentID] = perms
+			}
+		}
+	}
+
+	return policy
 }
 
 func getBool(config map[string]interface{}, key string, defaultValue bool) bool {
@@ -34,6 +92,119 @@ func getBool(config map[string]interface{}, key string, defaultValue bool) bool 
 }
 
 func (s *SafetyPolicy) CheckPermission(toolName string, inputs map[string]interface{}) ToolPermission {
+	return s.CheckPermissionWithContext(toolName, inputs, "")
+}
+
+func (s *SafetyPolicy) CheckPermissionWithContext(toolName string, inputs map[string]interface{}, agentID string) ToolPermission {
+	// Check agent-specific permissions if agent ID is provided
+	if agentID != "" {
+		if perms, exists := s.agentPermissions[agentID]; exists {
+			// Check if tool is in allowed tools list (if specified)
+			if len(perms.AllowedTools) > 0 {
+				allowed := false
+				for _, tool := range perms.AllowedTools {
+					if tool == toolName {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					return ToolPermission{
+						Allowed: false,
+						Reason:  fmt.Sprintf("Tool '%s' not in agent's allowed tools list", toolName),
+					}
+				}
+			}
+
+			// Check namespace access
+			if len(perms.Namespaces) > 0 {
+				if namespace, ok := inputs["namespace"].(string); ok {
+					allowed := false
+					for _, ns := range perms.Namespaces {
+						if ns == namespace {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						return ToolPermission{
+							Allowed: false,
+							Reason:  fmt.Sprintf("Agent not authorized to access namespace '%s'", namespace),
+						}
+					}
+				}
+			}
+
+			// Apply scope-based restrictions
+			switch perms.Scope {
+			case "ScopeReadOnly":
+				readOnlyTools := map[string]bool{
+					"list_workloads":          true,
+					"get_workload":            true,
+					"list_pods":               true,
+					"stream_logs":             true,
+					"list_namespaces":         true,
+					"get_cluster_health":      true,
+					"analyze_workload":        true,
+					"generate_manifest":       true,
+					"natural_language_deploy": true, // Can parse but not execute
+				}
+				if !readOnlyTools[toolName] {
+					return ToolPermission{
+						Allowed: false,
+						Reason:  fmt.Sprintf("Agent has read-only scope - tool '%s' requires write permissions", toolName),
+					}
+				}
+			case "ScopeWrite":
+				// Write scope allows deploy, restart, create_namespace but not delete
+				adminOnlyTools := map[string]bool{
+					"delete_workload": true,
+				}
+				if adminOnlyTools[toolName] {
+					return ToolPermission{
+						Allowed: false,
+						Reason:  fmt.Sprintf("Tool '%s' requires admin scope", toolName),
+					}
+				}
+			case "ScopeAdmin":
+				// Admin scope allows all tools
+				// Fall through to additional checks
+			}
+		} else {
+			// Agent not found, apply default scope
+			switch s.defaultScope {
+			case "ScopeReadOnly":
+				readOnlyTools := map[string]bool{
+					"list_workloads":          true,
+					"get_workload":            true,
+					"list_pods":               true,
+					"stream_logs":             true,
+					"list_namespaces":         true,
+					"get_cluster_health":      true,
+					"analyze_workload":        true,
+					"generate_manifest":       true,
+					"natural_language_deploy": true,
+				}
+				if !readOnlyTools[toolName] {
+					return ToolPermission{
+						Allowed: false,
+						Reason:  fmt.Sprintf("Default scope is read-only - tool '%s' requires write permissions", toolName),
+					}
+				}
+			case "ScopeWrite":
+				adminOnlyTools := map[string]bool{
+					"delete_workload": true,
+				}
+				if adminOnlyTools[toolName] {
+					return ToolPermission{
+						Allowed: false,
+						Reason:  fmt.Sprintf("Tool '%s' requires admin scope", toolName),
+					}
+				}
+			}
+		}
+	}
+
 	if s.readonlyMode {
 		// In readonly mode, only allow read operations
 		readOnlyTools := map[string]bool{

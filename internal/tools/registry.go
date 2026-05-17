@@ -8,6 +8,8 @@ import (
 
 	"github.com/kranix-io/kranix-mcp/internal/audit"
 	"github.com/kranix-io/kranix-mcp/internal/client"
+	"github.com/kranix-io/kranix-mcp/internal/healing"
+	"github.com/kranix-io/kranix-mcp/internal/nlp"
 	"github.com/kranix-io/kranix-mcp/internal/safety"
 )
 
@@ -24,14 +26,18 @@ type Registry struct {
 	client      *client.Client
 	auditLogger *audit.AuditLogger
 	safety      *safety.SafetyPolicy
+	healer      *healing.Healer
+	nlpParser   *nlp.Parser
 	tools       map[string]ToolDefinition
 }
 
-func New(client *client.Client, auditLogger *audit.AuditLogger, safety *safety.SafetyPolicy) *Registry {
+func New(client *client.Client, auditLogger *audit.AuditLogger, safety *safety.SafetyPolicy, healer *healing.Healer) *Registry {
 	return &Registry{
 		client:      client,
 		auditLogger: auditLogger,
 		safety:      safety,
+		healer:      healer,
+		nlpParser:   nlp.NewParser(),
 		tools:       make(map[string]ToolDefinition),
 	}
 }
@@ -514,4 +520,99 @@ func (r *Registry) getClusterHealth(ctx context.Context, inputs map[string]inter
 
 	data, _ := json.MarshalIndent(health, "", "  ")
 	return string(data), nil
+}
+
+func (r *Registry) naturalLanguageDeploy(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	command := inputs["command"].(string)
+	execute := false
+	if exec, ok := inputs["execute"].(bool); ok {
+		execute = exec
+	}
+
+	intent, err := r.nlpParser.ParseDeploymentIntent(command)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse command: %w", err)
+	}
+
+	errors := r.nlpParser.ValidateIntent(intent)
+	if len(errors) > 0 {
+		intentJSON, _ := json.MarshalIndent(intent, "", "  ")
+		errorStr := ""
+		for i, err := range errors {
+			if i > 0 {
+				errorStr += "\n- "
+			}
+			errorStr += err
+		}
+		return fmt.Sprintf("Parsing completed with validation errors:\n%s\n\nErrors:\n- %s", string(intentJSON), errorStr), nil
+	}
+
+	if !execute {
+		intentJSON, _ := json.MarshalIndent(intent, "", "  ")
+		return fmt.Sprintf("Parsed deployment intent (not executed):\n%s", string(intentJSON)), nil
+	}
+
+	req := client.DeploymentRequest{
+		Name:      intent.Name,
+		Image:     intent.Image,
+		Namespace: intent.Namespace,
+		Replicas:  intent.Replicas,
+		Env:       intent.Env,
+	}
+
+	workload, err := r.client.DeployWorkload(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to deploy workload: %w", err)
+	}
+
+	result := map[string]interface{}{
+		"message":  "Deployment executed successfully",
+		"intent":   intent,
+		"workload": workload,
+	}
+
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return string(data), nil
+}
+func (r *Registry) getHealingStatus(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.healer == nil {
+		return `{"enabled": false, "message": "Healing mode not configured"}`, nil
+	}
+
+	status := r.healer.GetStatus()
+	data, _ := json.MarshalIndent(status, "", "  ")
+	return string(data), nil
+}
+
+//nolint:unused // Used via dynamic tool registration
+func (r *Registry) getHealingHistory(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.healer == nil {
+		return `{"history": [], "message": "Healing mode not configured"}`, nil
+	}
+
+	limit := 50
+	if l, ok := inputs["limit"].(float64); ok {
+		limit = int(l)
+	}
+
+	history := r.healer.GetActionHistory()
+	if len(history) > limit {
+		history = history[len(history)-limit:]
+	}
+
+	data, _ := json.MarshalIndent(history, "", "  ")
+	return string(data), nil
+}
+
+//nolint:unused // Used via dynamic tool registration
+func (r *Registry) resetHealingCount(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.healer == nil {
+		return "", fmt.Errorf("healing mode not configured")
+	}
+
+	workload := inputs["workload"].(string)
+	namespace := inputs["namespace"].(string)
+
+	r.healer.ResetRestartCount(workload, namespace)
+	return fmt.Sprintf("Reset restart count for workload %s in namespace %s", workload, namespace), nil
 }

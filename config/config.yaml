@@ -11,6 +11,32 @@ safety:
   allow_delete_workload: true
   allow_create_namespace: true
   readonly_mode: false       # set true to allow only read tools
+  default_scope: "write"     # readonly | write | admin
+  # Agent-specific permissions
+  agents:
+    claude-desktop:
+      scope: "write"
+      namespaces: []         # Empty means all namespaces
+      allowed_tools: []      # Empty means all tools based on scope
+    production-bot:
+      scope: "admin"
+      namespaces: ["production", "staging"]
+      allowed_tools: []
+    read-only-agent:
+      scope: "readonly"
+      namespaces: []
+      allowed_tools: []
+
+healing:
+  enabled: true
+  mode: "observe"           # disabled | observe | auto
+  check_interval: 30s
+  max_restarts_per_hour: 10
+  restart_cooldown: 5m
+  auto_scale_enabled: true
+  min_replicas: 1
+  max_replicas: 10
+  namespaces: []            # Empty means all namespaces
 
 audit:
   enabled: true

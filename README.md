@@ -52,6 +52,10 @@ These are the tools AI agents can call:
 | `analyze_workload` | Run AI-powered failure analysis on a workload |
 | `generate_manifest` | Generate a Kubernetes manifest from a plain-text description |
 | `get_cluster_health` | Summary of overall cluster health |
+| `natural_language_deploy` | Deploy using natural language (e.g., "deploy api-server v2 to prod with 5 replicas") |
+| `get_healing_status` | Get autonomous healing mode status |
+| `get_healing_history` | Get history of autonomous healing actions |
+| `reset_healing_count` | Reset restart count for a workload |
 
 ### Tool schema example
 
@@ -85,7 +89,92 @@ Not everything is exposed. By design, agents **cannot**:
 - Access secrets directly
 - Perform bulk deletes
 
-All agent actions are logged with the agent identity, tool name, inputs, and outcome.
+AllNew Features
+
+### Autonomous Healing Mode
+
+The autonomous healing mode continuously monitors cluster health and automatically fixes issues without being prompted. It can:
+
+- Detect failing workloads and pods
+- Automatically restart crashed services
+- Scale up workloads experiencing crash loop backoff
+- Track restart counts to prevent restart loops
+- Operate in three modes: `disabled`, `observe`, or `auto`
+
+**Configuration:**
+
+```yaml
+healing:
+  enabled: true
+  mode: "observe"           # disabled | observe | auto
+  check_interval: 30s
+  max_restarts_per_hour: 10
+  restart_cooldown: 5m
+  auto_scale_enabled: true
+  min_replicas: 1
+  max_replicas: 10
+  namespaces: []            # Empty means all namespaces
+```
+
+**Tools:**
+- `get_healing_status` - Check current healing mode status
+- `get_healing_history` - View history of healing actions
+- `reset_healing_count` - Reset restart counter after fixing issues
+
+### Natural Language Deploys
+
+Deploy workloads using plain English commands. The NLP parser understands commands like:
+
+- "deploy api-server v2 to prod with 5 replicas"
+- "launch nginx:latest to staging with env PORT=8080"
+- "scale workload frontend to 10 replicas in production"
+
+**Usage:**
+
+```json
+{
+  "command": "deploy api-server v2 to prod with 5 replicas",
+  "execute": false  // Set to true to actually deploy
+}
+```
+
+**Tools:**
+- `natural_language_deploy` - Parse and execute natural language deployment commands
+
+### Agent Permission Scopes
+
+Fine-grained access control per agent identity with three scopes:
+
+- **readonly** - Can only read cluster state (list, get, analyze)
+- **write** - Can deploy, restart, create namespaces (cannot delete)
+- **admin** - Full access including delete operations
+
+**Configuration:**
+
+```yaml
+safety:
+  default_scope: "write"     # Default scope for unknown agents
+  agents:
+    claude-desktop:
+      scope: "write"
+      namespaces: []         # Empty means all namespaces
+      allowed_tools: []      # Empty means all tools based on scope
+    production-bot:
+      scope: "admin"
+      namespaces: ["production", "staging"]
+    read-only-agent:
+      scope: "readonly"
+```
+
+**Namespace Isolation:**
+
+Agents can be restricted to specific namespaces. When an agent tries to access a namespace outside its allowed list, the action is denied with a clear error message.
+
+---
+
+---
+
+##  agent actions are logged with the agent identity, tool name, inputs, and outcome.
 
 ---
 
@@ -100,7 +189,9 @@ kranix-mcp/
 │   ├── tools/            # One file per MCP tool implementation
 │   ├── client/           # kranix-api HTTP client wrapper
 │   ├── audit/            # Audit log sink
-│   └── safety/           # Tool permission/safety policy
+│   ├── safety/           # Tool permission/safety policy with agent scopes
+│   ├── healing/          # Autonomous healing mode
+│   └── nlp/              # Natural language parser for deployments
 ├── schemas/              # JSON schemas for all tool inputs
 ├── config/               # Default config files
 └── tests/
@@ -116,6 +207,38 @@ kranix-mcp/
 
 - Node.js 20+ or Go 1.22+ (depending on your build target)
 - A running `kranix-api` instance
+
+healing:
+  enabled: true
+  mode: "observe"           # disabled | observe | auto
+  check_interval: 30s
+  max_restarts_per_hour: 10
+  restart_cooldown: 5m
+  auto_scale_enabled: true
+  min_replicas: 1
+  max_replicas: 10
+  `kranix-core` | Healing mode integrates with core's drift detection and health gates |
+| namespaces: []            # Empty means all namespaces
+
+---
+
+## Integration with Kranix Ecosystem
+
+### Kranix-Core Integration
+
+The autonomous healing mode integrates with kranix-core's existing features:
+
+- **Drift Detection**: Healing actions are logged as events in kranix-core's event sourcing system
+- **Health Gates**: Healing checks respect workload health gate configurations
+- **Failure Prediction**: Uses kranix-core's ML-based failure prediction when available
+
+### Kranix-API Integration
+
+Agent permission scopes align with kranix-api's authentication system:
+
+- Agent identities can be synchronized with API keys or JWT tokens
+- Permission checks are enforced both at the MCP layer and API layer
+- Audit logs are consistent across both systems for complete traceability
 - An MCP-compatible AI client (Claude Desktop, Claude API, or any MCP host)
 
 ### Run locally (stdio transport)
