@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["mode"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "description": "Dry-run mode: disabled (execute), preview (show only), log (execute and log)",
+      "enum": ["disabled", "preview", "log"]
+    }
+  }
+}

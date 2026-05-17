@@ -1,0 +1,59 @@
+{
+  "id": "database-restart",
+  "name": "Database Service Restart",
+  "description": "Automated runbook for restarting database services when they become unresponsive",
+  "category": "database",
+  "severity": "high",
+  "steps": [
+    {
+      "id": "step-0",
+      "name": "Check Database Workload Status",
+      "description": "Get current status of the database workload",
+      "tool": "get_workload",
+      "inputs": {
+        "name": "{{database_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "stop",
+      "timeout": "5m"
+    },
+    {
+      "id": "step-1",
+      "name": "List Database Pods",
+      "description": "List all pods for the database workload",
+      "tool": "list_pods",
+      "inputs": {
+        "workload": "{{database_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "stop",
+      "timeout": "2m"
+    },
+    {
+      "id": "step-2",
+      "name": "Restart Database Workload",
+      "description": "Restart the database workload to recover from issues",
+      "tool": "restart_workload",
+      "inputs": {
+        "name": "{{database_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "stop",
+      "timeout": "5m"
+    },
+    {
+      "id": "step-3",
+      "name": "Verify Database Recovery",
+      "description": "Verify the database workload is running after restart",
+      "tool": "get_workload",
+      "inputs": {
+        "name": "{{database_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "continue",
+      "timeout": "5m"
+    }
+  ],
+  "created_at": "2026-05-17T00:00:00Z",
+  "updated_at": "2026-05-17T00:00:00Z"
+}

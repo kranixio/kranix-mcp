@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "required": ["runbook_id", "agent_id"],
+  "properties": {
+    "runbook_id": {
+      "type": "string",
+      "description": "Runbook ID to execute"
+    },
+    "agent_id": {
+      "type": "string",
+      "description": "Agent ID triggering the execution"
+    },
+    "context": {
+      "type": "object",
+      "description": "Additional context for the runbook execution"
+    }
+  }
+}

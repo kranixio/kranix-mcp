@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -12,7 +13,10 @@ import (
 
 	"github.com/kranix-io/kranix-mcp/internal/audit"
 	"github.com/kranix-io/kranix-mcp/internal/client"
+	"github.com/kranix-io/kranix-mcp/internal/coordination"
+	"github.com/kranix-io/kranix-mcp/internal/dryrun"
 	"github.com/kranix-io/kranix-mcp/internal/healing"
+	"github.com/kranix-io/kranix-mcp/internal/incident"
 	"github.com/kranix-io/kranix-mcp/internal/safety"
 	"github.com/kranix-io/kranix-mcp/internal/server"
 	"github.com/kranix-io/kranix-mcp/internal/tools"
@@ -20,12 +24,16 @@ import (
 )
 
 type Config struct {
-	MCP      MCPConfig      `yaml:"mcp"`
-	KraneAPI KraneAPIConfig `yaml:"krane_api"`
-	Safety   SafetyConfig   `yaml:"safety"`
-	Healing  HealingConfig  `yaml:"healing"`
-	Audit    AuditConfig    `yaml:"audit"`
+	MCP          MCPConfig          `yaml:"mcp"`
+	KraneAPI     KraneAPIConfig     `yaml:"krane_api"`
+	Safety       SafetyConfig       `yaml:"safety"`
+	Healing      HealingConfig      `yaml:"healing"`
+	Audit        AuditConfig        `yaml:"audit"`
+	Coordination CoordinationConfig `yaml:"coordination"`
+	DryRun       DryRunConfig       `yaml:"dryrun"`
+	Incident     IncidentConfig     `yaml:"incident"`
 }
+
 type MCPConfig struct {
 	Transport string `yaml:"transport"` // stdio | http
 	Port      int    `yaml:"port"`
@@ -66,6 +74,25 @@ type HealingConfig struct {
 type AuditConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Sink    string `yaml:"sink"` // stdout | file
+}
+
+type CoordinationConfig struct {
+	Enabled            bool          `yaml:"enabled"`
+	MaxConcurrentTasks int           `yaml:"max_concurrent_tasks"`
+	TaskTimeout        time.Duration `yaml:"task_timeout"`
+}
+
+type DryRunConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Mode       string `yaml:"mode"` // disabled | preview | log
+	MaxActions int    `yaml:"max_actions"`
+}
+
+type IncidentConfig struct {
+	Enabled     bool          `yaml:"enabled"`
+	RunbookPath string        `yaml:"runbook_path"`
+	AutoLoad    bool          `yaml:"auto_load"`
+	Timeout     time.Duration `yaml:"default_timeout"`
 }
 
 func main() {
@@ -140,8 +167,29 @@ func main() {
 		Namespaces:       config.Healing.Namespaces,
 	}, kraneClient, auditLogger)
 
+	// Initialize coordinator
+	coordinator := coordination.New(&coordination.Config{
+		MaxConcurrentTasks: config.Coordination.MaxConcurrentTasks,
+		TaskTimeout:        config.Coordination.TaskTimeout,
+	})
+
+	// Initialize dry runner
+	dryRunner := dryrun.New(&dryrun.Config{
+		Mode:       dryrun.DryRunMode(config.DryRun.Mode),
+		MaxActions: config.DryRun.MaxActions,
+		Enabled:    config.DryRun.Enabled,
+	})
+	dryRunner.RegisterDefaultPredictors()
+
+	// Initialize incident manager with tool executor wrapper
+	incidentMgr := incident.New(&incident.Config{
+		RunbookPath: config.Incident.RunbookPath,
+		AutoLoad:    config.Incident.AutoLoad,
+		Timeout:     config.Incident.Timeout,
+	}, &toolExecutorWrapper{client: kraneClient})
+
 	// Register all tools
-	toolRegistry := tools.New(kraneClient, auditLogger, safetyPolicy, healer)
+	toolRegistry := tools.New(kraneClient, auditLogger, safetyPolicy, healer, coordinator, dryRunner, incidentMgr)
 	toolRegistry.RegisterTools()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -205,6 +253,22 @@ func loadConfig(path string) (*Config, error) {
 					Enabled: true,
 					Sink:    "stdout",
 				},
+				Coordination: CoordinationConfig{
+					Enabled:            true,
+					MaxConcurrentTasks: 10,
+					TaskTimeout:        30 * time.Minute,
+				},
+				DryRun: DryRunConfig{
+					Enabled:    true,
+					Mode:       "disabled",
+					MaxActions: 100,
+				},
+				Incident: IncidentConfig{
+					Enabled:     true,
+					RunbookPath: "./runbooks",
+					AutoLoad:    true,
+					Timeout:     5 * time.Minute,
+				},
 			}, nil
 		}
 		return nil, err
@@ -246,4 +310,73 @@ func buildAgentConfigMap(agents map[string]AgentConfig) map[string]interface{} {
 		result[agentID] = agentMap
 	}
 	return result
+}
+
+// toolExecutorWrapper implements the ToolExecutor interface for incident manager
+type toolExecutorWrapper struct {
+	client *client.Client
+}
+
+func (w *toolExecutorWrapper) ExecuteTool(ctx context.Context, toolName string, inputs map[string]interface{}) (string, error) {
+	// For now, we'll execute directly via client for basic tools
+	// In a full implementation, this would delegate through the registry
+	switch toolName {
+	case "deploy_workload":
+		name := inputs["name"].(string)
+		image := inputs["image"].(string)
+		namespace := inputs["namespace"].(string)
+		replicas := 1
+		if r, ok := inputs["replicas"].(float64); ok {
+			replicas = int(r)
+		}
+		env := make(map[string]string)
+		if e, ok := inputs["env"].(map[string]interface{}); ok {
+			for k, v := range e {
+				env[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		req := client.DeploymentRequest{
+			Name:      name,
+			Image:     image,
+			Namespace: namespace,
+			Replicas:  replicas,
+			Env:       env,
+		}
+		workload, err := w.client.DeployWorkload(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(workload)
+		return string(data), nil
+	case "restart_workload":
+		name := inputs["name"].(string)
+		namespace := inputs["namespace"].(string)
+		err := w.client.RestartWorkload(ctx, name, namespace)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Workload %s restarted", name), nil
+	case "list_workloads":
+		namespace := ""
+		if ns, ok := inputs["namespace"].(string); ok {
+			namespace = ns
+		}
+		workloads, err := w.client.ListWorkloads(ctx, namespace)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(workloads)
+		return string(data), nil
+	case "get_workload":
+		name := inputs["name"].(string)
+		namespace := inputs["namespace"].(string)
+		workload, err := w.client.GetWorkload(ctx, name, namespace)
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.Marshal(workload)
+		return string(data), nil
+	default:
+		return "", fmt.Errorf("tool not supported in runbook execution: %s", toolName)
+	}
 }

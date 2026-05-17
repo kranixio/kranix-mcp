@@ -56,6 +56,27 @@ These are the tools AI agents can call:
 | `get_healing_status` | Get autonomous healing mode status |
 | `get_healing_history` | Get history of autonomous healing actions |
 | `reset_healing_count` | Reset restart count for a workload |
+| **Multi-Agent Coordination** | |
+| `create_task` | Create a new task for multi-agent coordination |
+| `delegate_task` | Delegate a task to another agent |
+| `get_task` | Get details of a specific task |
+| `list_tasks` | List all tasks, optionally filtered by agent or status |
+| `update_task_status` | Update the status of a task |
+| `create_subtask` | Create a sub-task for a parent task |
+| `claim_task` | Claim a pending task for the current agent |
+| **Dry-Run Mode** | |
+| `set_dryrun_mode` | Set the dry-run mode (disabled, preview, log) |
+| `get_dryrun_mode` | Get the current dry-run mode |
+| `get_dryrun_preview` | Get a preview of actions that would be executed in dry-run mode |
+| `clear_dryrun_actions` | Clear all recorded dry-run actions |
+| **Incident Response** | |
+| `list_runbooks` | List all available incident response runbooks |
+| `get_runbook` | Get details of a specific runbook |
+| `execute_runbook` | Execute an incident response runbook |
+| `get_execution` | Get details of a runbook execution |
+| `list_executions` | List all runbook executions, optionally filtered by runbook or status |
+| `cancel_execution` | Cancel a running runbook execution |
+| `create_runbook` | Create a new incident response runbook |
 
 ### Tool schema example
 
@@ -89,7 +110,7 @@ Not everything is exposed. By design, agents **cannot**:
 - Access secrets directly
 - Perform bulk deletes
 
-AllNew Features
+## New Features
 
 ### Autonomous Healing Mode
 
@@ -141,6 +162,130 @@ Deploy workloads using plain English commands. The NLP parser understands comman
 **Tools:**
 - `natural_language_deploy` - Parse and execute natural language deployment commands
 
+### Multi-Agent Coordination
+
+The multi-agent coordination system enables agents to delegate sub-tasks to other agents, enabling complex workflows and parallel execution:
+
+**Features:**
+- **Task Creation**: Agents can create tasks with priorities, descriptions, and assign them to specific agents
+- **Task Delegation**: Reassign tasks between agents as needed
+- **Sub-task Support**: Break down complex tasks into hierarchical sub-tasks
+- **Task Claiming**: Agents can claim pending tasks from a shared queue
+- **Status Tracking**: Real-time task status updates (pending, in_progress, completed, failed)
+
+**Usage Example:**
+
+```json
+{
+  "title": "Deploy database migration",
+  "description": "Run database schema migration for new feature",
+  "assigned_to": "database-agent",
+  "priority": "high",
+  "inputs": {
+    "migration_script": "migrations/v2_add_users.sql"
+  }
+}
+```
+
+**Configuration:**
+
+```yaml
+coordination:
+  enabled: true
+  max_concurrent_tasks: 10
+  task_timeout: 30m
+```
+
+### Dry-Run Mode
+
+Dry-run mode allows agents to preview exactly what would happen before executing actions, providing safety and predictability:
+
+**Modes:**
+- **disabled**: Execute actions normally (default)
+- **preview**: Record and preview actions without executing them
+- **log**: Execute actions while logging all operations for audit
+
+**Features:**
+- Predictive output for common operations
+- Human-readable preview of planned actions
+- Action history and clearing
+- Per-tool prediction functions
+
+**Usage:**
+
+```json
+{
+  "mode": "preview"
+}
+```
+
+Then execute tools normally and call `get_dryrun_preview` to see what would happen.
+
+**Configuration:**
+
+```yaml
+dryrun:
+  enabled: true
+  mode: "disabled"  # disabled | preview | log
+  max_actions: 100
+```
+
+### Incident Response Tool
+
+The incident response tool enables agents to read and execute runbooks for automated on-call responses:
+
+**Features:**
+- **Runbook Management**: Load runbooks from JSON files in a configured directory
+- **Step Execution**: Execute sequential steps with configurable failure handling
+- **Context Injection**: Pass runtime context to runbook steps
+- **Execution Tracking**: Monitor runbook execution status and results
+- **Cancellation Support**: Cancel running runbook executions
+
+**Runbook Structure:**
+
+```json
+{
+  "name": "Database Service Restart",
+  "category": "database",
+  "severity": "high",
+  "steps": [
+    {
+      "name": "Check Database Status",
+      "tool": "get_workload",
+      "inputs": {
+        "name": "{{database_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "name": "Restart Database",
+      "tool": "restart_workload",
+      "inputs": {
+        "name": "{{database_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
+```
+
+**Configuration:**
+
+```yaml
+incident:
+  enabled: true
+  runbook_path: "./runbooks"
+  auto_load: true
+  default_timeout: 5m
+```
+
+**Sample Runbooks:**
+- `database-restart.json`: Automated database service recovery
+- `pod-crashloop-recovery.json`: Handle CrashLoopBackoff scenarios
+- `cluster-health-check.json`: Comprehensive cluster diagnostics
+
 ### Agent Permission Scopes
 
 Fine-grained access control per agent identity with three scopes:
@@ -172,9 +317,9 @@ Agents can be restricted to specific namespaces. When an agent tries to access a
 
 ---
 
----
+## Audit logging
 
-##  agent actions are logged with the agent identity, tool name, inputs, and outcome.
+All agent actions are logged with the agent identity, tool name, inputs, and outcome.
 
 ---
 
@@ -185,18 +330,14 @@ kranix-mcp/
 ├── cmd/
 │   └── mcp/              # Entry point
 ├── internal/
-│   ├── server/           # MCP server setup (stdio + HTTP/SSE)
-│   ├── tools/            # One file per MCP tool implementation
-│   ├── client/           # kranix-api HTTP client wrapper
-│   ├── audit/            # Audit log sink
-│   ├── safety/           # Tool permission/safety policy with agent scopes
-│   ├── healing/          # Autonomous healing mode
-│   └── nlp/              # Natural language parser for deployments
-├── schemas/              # JSON schemas for all tool inputs
-├── config/               # Default config files
-└── tests/
-    ├── unit/
-    └── integration/
+│   ├── server/           # MCP server (stdio, HTTP/SSE)
+│   ├── tools/            # One file per MCP tool
+│   └── client/           # kranix-api client
+├── config/
+│   └── config.yaml
+├── test/
+│   ├── unit/
+│   └── integration/
 ```
 
 ---
@@ -207,18 +348,6 @@ kranix-mcp/
 
 - Node.js 20+ or Go 1.22+ (depending on your build target)
 - A running `kranix-api` instance
-
-healing:
-  enabled: true
-  mode: "observe"           # disabled | observe | auto
-  check_interval: 30s
-  max_restarts_per_hour: 10
-  restart_cooldown: 5m
-  auto_scale_enabled: true
-  min_replicas: 1
-  max_replicas: 10
-  `kranix-core` | Healing mode integrates with core's drift detection and health gates |
-| namespaces: []            # Empty means all namespaces
 
 ---
 
@@ -239,7 +368,6 @@ Agent permission scopes align with kranix-api's authentication system:
 - Agent identities can be synchronized with API keys or JWT tokens
 - Permission checks are enforced both at the MCP layer and API layer
 - Audit logs are consistent across both systems for complete traceability
-- An MCP-compatible AI client (Claude Desktop, Claude API, or any MCP host)
 
 ### Run locally (stdio transport)
 

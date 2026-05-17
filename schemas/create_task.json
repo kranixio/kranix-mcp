@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "required": ["title", "assigned_to"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Task title"
+    },
+    "description": {
+      "type": "string",
+      "description": "Task description"
+    },
+    "assigned_to": {
+      "type": "string",
+      "description": "Agent ID to assign the task to"
+    },
+    "priority": {
+      "type": "string",
+      "description": "Task priority (low, medium, high, critical)",
+      "default": "medium"
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Additional inputs for the task"
+    }
+  }
+}

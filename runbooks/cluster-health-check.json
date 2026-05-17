@@ -1,0 +1,38 @@
+{
+  "id": "cluster-health-check",
+  "name": "Cluster Health Diagnostic",
+  "description": "Comprehensive cluster health check and diagnostic runbook",
+  "category": "infrastructure",
+  "severity": "medium",
+  "steps": [
+    {
+      "id": "step-0",
+      "name": "Get Cluster Health",
+      "description": "Get overall cluster health status",
+      "tool": "get_cluster_health",
+      "inputs": {},
+      "on_failure": "continue",
+      "timeout": "2m"
+    },
+    {
+      "id": "step-1",
+      "name": "List All Workloads",
+      "description": "List all workloads across all namespaces",
+      "tool": "list_workloads",
+      "inputs": {},
+      "on_failure": "continue",
+      "timeout": "2m"
+    },
+    {
+      "id": "step-2",
+      "name": "List All Namespaces",
+      "description": "List all available namespaces",
+      "tool": "list_namespaces",
+      "inputs": {},
+      "on_failure": "continue",
+      "timeout": "1m"
+    }
+  ],
+  "created_at": "2026-05-17T00:00:00Z",
+  "updated_at": "2026-05-17T00:00:00Z"
+}

@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "required": ["task_id", "target_agent"],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "Task ID to delegate"
+    },
+    "target_agent": {
+      "type": "string",
+      "description": "Target agent ID"
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "id": "pod-crashloop-recovery",
+  "name": "Pod CrashLoopBackoff Recovery",
+  "description": "Automated runbook for handling pods in CrashLoopBackoff state",
+  "category": "application",
+  "severity": "critical",
+  "steps": [
+    {
+      "id": "step-0",
+      "name": "Get Failing Workload Status",
+      "description": "Get current status of the failing workload",
+      "tool": "get_workload",
+      "inputs": {
+        "name": "{{workload_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "stop",
+      "timeout": "5m"
+    },
+    {
+      "id": "step-1",
+      "name": "Stream Recent Logs",
+      "description": "Get recent logs to diagnose the crash",
+      "tool": "stream_logs",
+      "inputs": {
+        "pod": "{{pod_name}}",
+        "namespace": "{{namespace}}",
+        "tail_lines": 100
+      },
+      "on_failure": "continue",
+      "timeout": "2m"
+    },
+    {
+      "id": "step-2",
+      "name": "Analyze Workload Failure",
+      "description": "Run AI-powered failure analysis",
+      "tool": "analyze_workload",
+      "inputs": {
+        "name": "{{workload_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "continue",
+      "timeout": "5m"
+    },
+    {
+      "id": "step-3",
+      "name": "Restart Workload",
+      "description": "Restart the workload to clear CrashLoopBackoff",
+      "tool": "restart_workload",
+      "inputs": {
+        "name": "{{workload_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "stop",
+      "timeout": "5m"
+    },
+    {
+      "id": "step-4",
+      "name": "Verify Recovery",
+      "description": "Verify the workload is running successfully",
+      "tool": "get_workload",
+      "inputs": {
+        "name": "{{workload_name}}",
+        "namespace": "{{namespace}}"
+      },
+      "on_failure": "continue",
+      "timeout": "5m"
+    }
+  ],
+  "created_at": "2026-05-17T00:00:00Z",
+  "updated_at": "2026-05-17T00:00:00Z"
+}

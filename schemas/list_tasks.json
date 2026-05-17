@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "description": "Filter by assigned agent ID"
+    },
+    "status": {
+      "type": "string",
+      "description": "Filter by status (pending, in_progress, completed, failed)"
+    }
+  }
+}

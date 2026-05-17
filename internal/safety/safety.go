@@ -259,6 +259,30 @@ func (s *SafetyPolicy) CheckPermissionWithContext(toolName string, inputs map[st
 			Allowed: true,
 		}
 
+	// Multi-agent coordination tools - generally allowed for write scope and above
+	case "create_task", "delegate_task", "get_task", "list_tasks",
+		"update_task_status", "create_subtask", "claim_task":
+		return ToolPermission{
+			Allowed: true,
+		}
+
+	// Dry-run mode tools - always allowed
+	case "set_dryrun_mode", "get_dryrun_mode", "get_dryrun_preview", "clear_dryrun_actions":
+		return ToolPermission{
+			Allowed: true,
+		}
+
+	// Incident response tools - require write scope or above
+	case "list_runbooks", "get_runbook", "get_execution", "list_executions":
+		return ToolPermission{
+			Allowed: true,
+		}
+	case "execute_runbook", "cancel_execution", "create_runbook":
+		return ToolPermission{
+			Allowed:              true,
+			RequiresConfirmation: true,
+		}
+
 	default:
 		return ToolPermission{
 			Allowed: false,

@@ -8,7 +8,10 @@ import (
 
 	"github.com/kranix-io/kranix-mcp/internal/audit"
 	"github.com/kranix-io/kranix-mcp/internal/client"
+	"github.com/kranix-io/kranix-mcp/internal/coordination"
+	"github.com/kranix-io/kranix-mcp/internal/dryrun"
 	"github.com/kranix-io/kranix-mcp/internal/healing"
+	"github.com/kranix-io/kranix-mcp/internal/incident"
 	"github.com/kranix-io/kranix-mcp/internal/nlp"
 	"github.com/kranix-io/kranix-mcp/internal/safety"
 )
@@ -28,16 +31,22 @@ type Registry struct {
 	safety      *safety.SafetyPolicy
 	healer      *healing.Healer
 	nlpParser   *nlp.Parser
+	coordinator *coordination.Coordinator
+	dryRunner   *dryrun.DryRunner
+	incidentMgr *incident.IncidentManager
 	tools       map[string]ToolDefinition
 }
 
-func New(client *client.Client, auditLogger *audit.AuditLogger, safety *safety.SafetyPolicy, healer *healing.Healer) *Registry {
+func New(client *client.Client, auditLogger *audit.AuditLogger, safety *safety.SafetyPolicy, healer *healing.Healer, coordinator *coordination.Coordinator, dryRunner *dryrun.DryRunner, incidentMgr *incident.IncidentManager) *Registry {
 	return &Registry{
 		client:      client,
 		auditLogger: auditLogger,
 		safety:      safety,
 		healer:      healer,
 		nlpParser:   nlp.NewParser(),
+		coordinator: coordinator,
+		dryRunner:   dryRunner,
+		incidentMgr: incidentMgr,
 		tools:       make(map[string]ToolDefinition),
 	}
 }
@@ -272,6 +281,352 @@ func (r *Registry) RegisterTools() {
 			"type": "object",
 		},
 		Handler: r.getClusterHealth,
+	})
+
+	// Multi-agent coordination tools
+	r.RegisterTool(ToolDefinition{
+		Name:        "create_task",
+		Description: "Create a new task for multi-agent coordination",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"title", "assigned_to"},
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{
+					"type":        "string",
+					"description": "Task title",
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "Task description",
+				},
+				"assigned_to": map[string]interface{}{
+					"type":        "string",
+					"description": "Agent ID to assign the task to",
+				},
+				"priority": map[string]interface{}{
+					"type":        "string",
+					"description": "Task priority (low, medium, high, critical)",
+					"default":     "medium",
+				},
+				"inputs": map[string]interface{}{
+					"type":        "object",
+					"description": "Additional inputs for the task",
+				},
+			},
+		},
+		Handler: r.createTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "delegate_task",
+		Description: "Delegate a task to another agent",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id", "target_agent"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID to delegate",
+				},
+				"target_agent": map[string]interface{}{
+					"type":        "string",
+					"description": "Target agent ID",
+				},
+			},
+		},
+		Handler: r.delegateTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_task",
+		Description: "Get details of a specific task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+			},
+		},
+		Handler: r.getTask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "list_tasks",
+		Description: "List all tasks, optionally filtered by agent or status",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"agent_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by assigned agent ID",
+				},
+				"status": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by status (pending, in_progress, completed, failed)",
+				},
+			},
+		},
+		Handler: r.listTasks,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "update_task_status",
+		Description: "Update the status of a task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id", "status"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID",
+				},
+				"status": map[string]interface{}{
+					"type":        "string",
+					"description": "New status (pending, in_progress, completed, failed)",
+				},
+				"outputs": map[string]interface{}{
+					"type":        "object",
+					"description": "Task outputs",
+				},
+			},
+		},
+		Handler: r.updateTaskStatus,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "create_subtask",
+		Description: "Create a sub-task for a parent task",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"parent_task_id", "title", "assigned_to"},
+			"properties": map[string]interface{}{
+				"parent_task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Parent task ID",
+				},
+				"title": map[string]interface{}{
+					"type":        "string",
+					"description": "Sub-task title",
+				},
+				"assigned_to": map[string]interface{}{
+					"type":        "string",
+					"description": "Agent ID to assign the sub-task to",
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "Sub-task description",
+				},
+			},
+		},
+		Handler: r.createSubtask,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "claim_task",
+		Description: "Claim a pending task for the current agent",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"task_id", "agent_id"},
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Task ID to claim",
+				},
+				"agent_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Agent ID claiming the task",
+				},
+			},
+		},
+		Handler: r.claimTask,
+	})
+
+	// Dry-run mode tools
+	r.RegisterTool(ToolDefinition{
+		Name:        "set_dryrun_mode",
+		Description: "Set the dry-run mode (disabled, preview, log)",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"mode"},
+			"properties": map[string]interface{}{
+				"mode": map[string]interface{}{
+					"type":        "string",
+					"description": "Dry-run mode: disabled (execute), preview (show only), log (execute and log)",
+					"enum":        []string{"disabled", "preview", "log"},
+				},
+			},
+		},
+		Handler: r.setDryRunMode,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_dryrun_mode",
+		Description: "Get the current dry-run mode",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+		},
+		Handler: r.getDryRunMode,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_dryrun_preview",
+		Description: "Get a preview of actions that would be executed in dry-run mode",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+		},
+		Handler: r.getDryRunPreview,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "clear_dryrun_actions",
+		Description: "Clear all recorded dry-run actions",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+		},
+		Handler: r.clearDryRunActions,
+	})
+
+	// Incident response tools
+	r.RegisterTool(ToolDefinition{
+		Name:        "list_runbooks",
+		Description: "List all available incident response runbooks",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"category": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by category (e.g., database, network, application)",
+				},
+			},
+		},
+		Handler: r.listRunbooks,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_runbook",
+		Description: "Get details of a specific runbook",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"runbook_id"},
+			"properties": map[string]interface{}{
+				"runbook_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Runbook ID",
+				},
+			},
+		},
+		Handler: r.getRunbook,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "execute_runbook",
+		Description: "Execute an incident response runbook",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"runbook_id", "agent_id"},
+			"properties": map[string]interface{}{
+				"runbook_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Runbook ID to execute",
+				},
+				"agent_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Agent ID triggering the execution",
+				},
+				"context": map[string]interface{}{
+					"type":        "object",
+					"description": "Additional context for the runbook execution",
+				},
+			},
+		},
+		Handler: r.executeRunbook,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "get_execution",
+		Description: "Get details of a runbook execution",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"execution_id"},
+			"properties": map[string]interface{}{
+				"execution_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Execution ID",
+				},
+			},
+		},
+		Handler: r.getExecution,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "list_executions",
+		Description: "List all runbook executions, optionally filtered by runbook or status",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"runbook_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by runbook ID",
+				},
+				"status": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by status (running, completed, failed, cancelled)",
+				},
+			},
+		},
+		Handler: r.listExecutions,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "cancel_execution",
+		Description: "Cancel a running runbook execution",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"execution_id"},
+			"properties": map[string]interface{}{
+				"execution_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Execution ID to cancel",
+				},
+			},
+		},
+		Handler: r.cancelExecution,
+	})
+
+	r.RegisterTool(ToolDefinition{
+		Name:        "create_runbook",
+		Description: "Create a new incident response runbook",
+		InputSchema: map[string]interface{}{
+			"type":     "object",
+			"required": []string{"name", "steps"},
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Runbook name",
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "Runbook description",
+				},
+				"category": map[string]interface{}{
+					"type":        "string",
+					"description": "Runbook category (e.g., database, network, application)",
+				},
+				"severity": map[string]interface{}{
+					"type":        "string",
+					"description": "Runbook severity (low, medium, high, critical)",
+					"default":     "medium",
+				},
+				"steps": map[string]interface{}{
+					"type":        "array",
+					"description": "Array of step objects with name, tool, inputs, etc.",
+				},
+			},
+		},
+		Handler: r.createRunbook,
 	})
 }
 
@@ -615,4 +970,376 @@ func (r *Registry) resetHealingCount(ctx context.Context, inputs map[string]inte
 
 	r.healer.ResetRestartCount(workload, namespace)
 	return fmt.Sprintf("Reset restart count for workload %s in namespace %s", workload, namespace), nil
+}
+
+// Multi-agent coordination tool implementations
+func (r *Registry) createTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	title := inputs["title"].(string)
+	assignedTo := inputs["assigned_to"].(string)
+	description := ""
+	if desc, ok := inputs["description"].(string); ok {
+		description = desc
+	}
+	priority := "medium"
+	if prio, ok := inputs["priority"].(string); ok {
+		priority = prio
+	}
+
+	taskInputs := make(map[string]interface{})
+	if in, ok := inputs["inputs"].(map[string]interface{}); ok {
+		taskInputs = in
+	}
+
+	// Get agent ID from context
+	createdBy := "unknown"
+	if agentID, ok := ctx.Value("agent_id").(string); ok {
+		createdBy = agentID
+	}
+
+	task := &coordination.Task{
+		Title:       title,
+		Description: description,
+		AssignedTo:  assignedTo,
+		CreatedBy:   createdBy,
+		Priority:    priority,
+		Inputs:      taskInputs,
+	}
+
+	if r.coordinator == nil {
+		return "", fmt.Errorf("coordinator not initialized")
+	}
+
+	createdTask, err := r.coordinator.CreateTask(ctx, task)
+	if err != nil {
+		return "", err
+	}
+
+	return createdTask.ToJSON()
+}
+
+func (r *Registry) delegateTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	taskID := inputs["task_id"].(string)
+	targetAgent := inputs["target_agent"].(string)
+
+	if r.coordinator == nil {
+		return "", fmt.Errorf("coordinator not initialized")
+	}
+
+	task, err := r.coordinator.DelegateTask(ctx, taskID, targetAgent)
+	if err != nil {
+		return "", err
+	}
+
+	return task.ToJSON()
+}
+
+func (r *Registry) getTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	taskID := inputs["task_id"].(string)
+
+	if r.coordinator == nil {
+		return "", fmt.Errorf("coordinator not initialized")
+	}
+
+	task, err := r.coordinator.GetTask(taskID)
+	if err != nil {
+		return "", err
+	}
+
+	return task.ToJSON()
+}
+
+func (r *Registry) listTasks(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	agentID := ""
+	if aid, ok := inputs["agent_id"].(string); ok {
+		agentID = aid
+	}
+	status := ""
+	if st, ok := inputs["status"].(string); ok {
+		status = st
+	}
+
+	if r.coordinator == nil {
+		return "", fmt.Errorf("coordinator not initialized")
+	}
+
+	tasks, err := r.coordinator.ListTasks(agentID, status)
+	if err != nil {
+		return "", err
+	}
+
+	data, _ := json.MarshalIndent(tasks, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) updateTaskStatus(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	taskID := inputs["task_id"].(string)
+	status := inputs["status"].(string)
+
+	outputs := make(map[string]interface{})
+	if out, ok := inputs["outputs"].(map[string]interface{}); ok {
+		outputs = out
+	}
+
+	if r.coordinator == nil {
+		return "", fmt.Errorf("coordinator not initialized")
+	}
+
+	task, err := r.coordinator.UpdateTaskStatus(ctx, taskID, status, outputs)
+	if err != nil {
+		return "", err
+	}
+
+	return task.ToJSON()
+}
+
+func (r *Registry) createSubtask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	parentTaskID := inputs["parent_task_id"].(string)
+	title := inputs["title"].(string)
+	assignedTo := inputs["assigned_to"].(string)
+	description := ""
+	if desc, ok := inputs["description"].(string); ok {
+		description = desc
+	}
+
+	subTask := &coordination.Task{
+		Title:       title,
+		Description: description,
+		AssignedTo:  assignedTo,
+	}
+
+	if r.coordinator == nil {
+		return "", fmt.Errorf("coordinator not initialized")
+	}
+
+	createdTask, err := r.coordinator.CreateSubTask(ctx, parentTaskID, subTask)
+	if err != nil {
+		return "", err
+	}
+
+	return createdTask.ToJSON()
+}
+
+func (r *Registry) claimTask(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	taskID := inputs["task_id"].(string)
+	agentID := inputs["agent_id"].(string)
+
+	if r.coordinator == nil {
+		return "", fmt.Errorf("coordinator not initialized")
+	}
+
+	task, err := r.coordinator.ClaimTask(ctx, taskID, agentID)
+	if err != nil {
+		return "", err
+	}
+
+	return task.ToJSON()
+}
+
+// Dry-run mode tool implementations
+func (r *Registry) setDryRunMode(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	mode := inputs["mode"].(string)
+
+	if r.dryRunner == nil {
+		return "", fmt.Errorf("dry runner not initialized")
+	}
+
+	r.dryRunner.SetMode(dryrun.DryRunMode(mode))
+	return fmt.Sprintf("Dry-run mode set to: %s", mode), nil
+}
+
+func (r *Registry) getDryRunMode(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.dryRunner == nil {
+		return "", fmt.Errorf("dry runner not initialized")
+	}
+
+	mode := r.dryRunner.GetMode()
+	return fmt.Sprintf(`{"mode": "%s"}`, mode), nil
+}
+
+func (r *Registry) getDryRunPreview(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.dryRunner == nil {
+		return "", fmt.Errorf("dry runner not initialized")
+	}
+
+	preview, err := r.dryRunner.GetPreview()
+	if err != nil {
+		return "", err
+	}
+
+	return preview, nil
+}
+
+func (r *Registry) clearDryRunActions(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	if r.dryRunner == nil {
+		return "", fmt.Errorf("dry runner not initialized")
+	}
+
+	r.dryRunner.ClearActions()
+	return "Dry-run actions cleared", nil
+}
+
+// Incident response tool implementations
+func (r *Registry) listRunbooks(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	category := ""
+	if cat, ok := inputs["category"].(string); ok {
+		category = cat
+	}
+
+	if r.incidentMgr == nil {
+		return "", fmt.Errorf("incident manager not initialized")
+	}
+
+	runbooks, err := r.incidentMgr.ListRunbooks(category)
+	if err != nil {
+		return "", err
+	}
+
+	data, _ := json.MarshalIndent(runbooks, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) getRunbook(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	runbookID := inputs["runbook_id"].(string)
+
+	if r.incidentMgr == nil {
+		return "", fmt.Errorf("incident manager not initialized")
+	}
+
+	runbook, err := r.incidentMgr.GetRunbook(runbookID)
+	if err != nil {
+		return "", err
+	}
+
+	return runbook.ToJSON()
+}
+
+func (r *Registry) executeRunbook(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	runbookID := inputs["runbook_id"].(string)
+	agentID := inputs["agent_id"].(string)
+
+	context := make(map[string]interface{})
+	if ctx, ok := inputs["context"].(map[string]interface{}); ok {
+		context = ctx
+	}
+
+	if r.incidentMgr == nil {
+		return "", fmt.Errorf("incident manager not initialized")
+	}
+
+	execution, err := r.incidentMgr.ExecuteRunbook(ctx, runbookID, agentID, context)
+	if err != nil {
+		return "", err
+	}
+
+	return execution.ToJSON()
+}
+
+func (r *Registry) getExecution(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	executionID := inputs["execution_id"].(string)
+
+	if r.incidentMgr == nil {
+		return "", fmt.Errorf("incident manager not initialized")
+	}
+
+	execution, err := r.incidentMgr.GetExecution(executionID)
+	if err != nil {
+		return "", err
+	}
+
+	return execution.ToJSON()
+}
+
+func (r *Registry) listExecutions(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	runbookID := ""
+	if rbID, ok := inputs["runbook_id"].(string); ok {
+		runbookID = rbID
+	}
+	status := ""
+	if st, ok := inputs["status"].(string); ok {
+		status = st
+	}
+
+	if r.incidentMgr == nil {
+		return "", fmt.Errorf("incident manager not initialized")
+	}
+
+	executions, err := r.incidentMgr.ListExecutions(runbookID, status)
+	if err != nil {
+		return "", err
+	}
+
+	data, _ := json.MarshalIndent(executions, "", "  ")
+	return string(data), nil
+}
+
+func (r *Registry) cancelExecution(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	executionID := inputs["execution_id"].(string)
+
+	if r.incidentMgr == nil {
+		return "", fmt.Errorf("incident manager not initialized")
+	}
+
+	err := r.incidentMgr.CancelExecution(executionID)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("Execution %s cancelled", executionID), nil
+}
+
+func (r *Registry) createRunbook(ctx context.Context, inputs map[string]interface{}) (string, error) {
+	name := inputs["name"].(string)
+	description := ""
+	if desc, ok := inputs["description"].(string); ok {
+		description = desc
+	}
+	category := ""
+	if cat, ok := inputs["category"].(string); ok {
+		category = cat
+	}
+	severity := "medium"
+	if sev, ok := inputs["severity"].(string); ok {
+		severity = sev
+	}
+
+	steps := []incident.Step{}
+	if st, ok := inputs["steps"].([]interface{}); ok {
+		for _, s := range st {
+			stepMap, ok := s.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			step := incident.Step{
+				ID:          fmt.Sprintf("step-%d", len(steps)),
+				Name:        stepMap["name"].(string),
+				Description: stepMap["description"].(string),
+				Tool:        stepMap["tool"].(string),
+				OnFailure:   "stop",
+				Timeout:     5 * time.Minute,
+			}
+			if inputsData, ok := stepMap["inputs"].(map[string]interface{}); ok {
+				step.Inputs = inputsData
+			}
+			steps = append(steps, step)
+		}
+	}
+
+	runbook := &incident.Runbook{
+		Name:        name,
+		Description: description,
+		Category:    category,
+		Severity:    severity,
+		Steps:       steps,
+	}
+
+	if r.incidentMgr == nil {
+		return "", fmt.Errorf("incident manager not initialized")
+	}
+
+	err := r.incidentMgr.CreateRunbook(runbook)
+	if err != nil {
+		return "", err
+	}
+
+	return runbook.ToJSON()
 }

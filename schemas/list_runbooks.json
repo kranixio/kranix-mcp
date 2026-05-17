@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "description": "Filter by category (e.g., database, network, application)"
+    }
+  }
+}
