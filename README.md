@@ -599,7 +599,7 @@ audit:
 | Repo | Relationship |
 |---|---|
 | `kranix-api` | All tool calls translate into kranix-api HTTP requests |
-| `kranix-packages` | Imports shared types and API client |
+| `kranix-packages` | Imports shared types, Go SDK, Python/TS SDKs, and `kranix-mock-api` for tests |
 | AI agents | Consumed via MCP protocol (stdio or HTTP/SSE) |
 
 ---
